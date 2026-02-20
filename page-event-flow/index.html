@@ -1,0 +1,1101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Slack Bot Event Flow Explorer</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0f1117;--sidebar:#161922;--card:#1c1f2b;--border:#2a2d3a;
+  --text:#e2e4ea;--text-muted:#8b8fa3;--text-dim:#555a6e;
+  --accent:#6366f1;--accent-hover:#818cf8;
+  --filter:#374151;--check:#92400e;--service:#065f46;
+  --db:#1e3a5f;--slack:#4c1d95;
+  --branch:#c2410c;--early-exit:#7f1d1d;
+  --filter-text:#9ca3af;--check-text:#fbbf24;--service-text:#34d399;
+  --db-text:#60a5fa;--slack-text:#a78bfa;--queue-text:#fcd34d;
+  --branch-text:#fdba74;--early-exit-text:#fca5a5;
+}
+html{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-size:14px;color:var(--text);background:var(--bg);overflow:hidden;height:100%}
+body{display:flex;height:100vh;overflow:hidden}
+
+/* SIDEBAR */
+.sidebar{width:260px;min-width:260px;background:var(--sidebar);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;overflow:hidden;z-index:10}
+.sidebar-header{padding:16px 16px 12px;border-bottom:1px solid var(--border)}
+.sidebar-header h1{font-size:15px;font-weight:600;margin-bottom:10px;letter-spacing:-0.3px}
+.search-input{width:100%;padding:7px 10px;background:var(--card);border:1px solid var(--border);
+  border-radius:6px;color:var(--text);font-size:13px;outline:none;transition:border-color .15s}
+.search-input:focus{border-color:var(--accent)}
+.search-input::placeholder{color:var(--text-dim)}
+.event-list{flex:1;overflow-y:auto;padding:8px}
+.event-list::-webkit-scrollbar{width:5px}
+.event-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+.category-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;
+  color:var(--text-dim);padding:10px 8px 4px;user-select:none}
+.event-item{padding:7px 10px;border-radius:6px;cursor:pointer;font-size:13px;
+  color:var(--text-muted);transition:all .12s;display:flex;align-items:center;gap:6px;user-select:none}
+.event-item:hover{background:rgba(99,102,241,.08);color:var(--text)}
+.event-item.active{background:rgba(99,102,241,.15);color:#fff;font-weight:500}
+.event-item.active .event-dot{background:var(--accent)}
+.event-item.hidden{display:none}
+.event-dot{width:6px;height:6px;border-radius:50%;background:var(--text-dim);flex-shrink:0}
+.event-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mode-toggle{padding:12px 16px;border-top:1px solid var(--border)}
+.mode-toggle label{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-muted);cursor:pointer;user-select:none}
+.mode-toggle input{display:none}
+.toggle-track{width:34px;height:18px;border-radius:9px;background:var(--border);position:relative;
+  transition:background .2s;flex-shrink:0}
+.toggle-track::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;
+  border-radius:50%;background:var(--text-dim);transition:all .2s}
+.mode-toggle input:checked+.toggle-track{background:var(--accent)}
+.mode-toggle input:checked+.toggle-track::after{left:18px;background:#fff}
+.mode-toggle input:disabled+.toggle-track{opacity:.3;cursor:not-allowed}
+.mode-toggle input:disabled~.mode-label{opacity:.3;cursor:not-allowed}
+.mode-label{font-weight:500}
+
+/* MAIN */
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+
+/* LEGEND */
+.legend{display:flex;gap:6px;padding:12px 20px;border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center}
+.legend-chip{padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;cursor:pointer;
+  transition:all .15s;border:1px solid transparent;user-select:none}
+.legend-chip:hover{opacity:.85}
+.legend-chip.active{box-shadow:0 0 0 2px var(--accent)}
+.legend-chip.filter{background:var(--filter);color:var(--filter-text)}
+.legend-chip.check{background:var(--check);color:var(--check-text)}
+.legend-chip.service{background:var(--service);color:var(--service-text)}
+.legend-chip.db{background:var(--db);color:var(--db-text)}
+.legend-chip.slack{background:var(--slack);color:var(--slack-text)}
+.legend-chip.queue{background:#422006;color:#fcd34d;border:1px solid #a16207}
+.legend-chip.branch{background:rgba(194,65,12,.2);border:2px solid var(--branch);color:var(--branch-text)}
+.legend-chip.early-exit{background:var(--early-exit);color:var(--early-exit-text);border:1px dashed var(--early-exit-text)}
+
+/* FLOW AREA */
+.flow-area{flex:1;overflow-y:auto;padding:24px 32px 32px;position:relative}
+.flow-area::-webkit-scrollbar{width:6px}
+.flow-area::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+.flow-title{font-size:18px;font-weight:700;margin-bottom:4px}
+.flow-source{font-size:12px;color:var(--text-dim);margin-bottom:20px;font-family:monospace}
+.flow-container{display:flex;flex-direction:column;align-items:flex-start;gap:0;padding-bottom:40px}
+.step-wrapper{display:flex;flex-direction:column;align-items:flex-start;opacity:0;
+  transform:translateY(12px);transition:opacity .25s ease,transform .25s ease}
+.step-wrapper.visible{opacity:1;transform:translateY(0)}
+.step-card{padding:10px 16px;border-radius:8px;font-size:13px;line-height:1.5;
+  max-width:520px;position:relative}
+.step-card.filter{background:var(--filter);color:var(--filter-text);border:1px solid #4b5563}
+.step-card.check{background:var(--check);color:var(--check-text);border:1px solid #b45309}
+.step-card.service{background:var(--service);color:var(--service-text);border:1px solid #059669}
+.step-card.db{background:var(--db);color:var(--db-text);border:1px solid #2563eb}
+.step-card.slack{background:var(--slack);color:var(--slack-text);border:1px solid #6d28d9}
+.step-card.queue{background:#422006;color:#fcd34d;border:1px solid #a16207}
+.step-card.branch{background:rgba(194,65,12,.15);border:2px dashed #ea580c;color:var(--branch-text);
+  border-radius:8px;padding:10px 20px;text-align:center}
+.step-card.branch .step-label{color:var(--branch-text)}
+.step-card.early-exit{background:var(--early-exit);color:var(--early-exit-text);
+  border:1px dashed #ef4444;opacity:.9}
+.step-card.early-exit .exit-footer{font-size:10px;font-weight:700;text-transform:uppercase;
+  letter-spacing:1px;margin-top:4px;color:#f87171}
+.step-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;
+  margin-bottom:2px;opacity:.7}
+.step-text{font-weight:500}
+.arrow-connector{width:2px;height:20px;background:var(--border);margin-left:24px}
+.arrow-connector.branch-yes{margin-left:40px;position:relative}
+.arrow-connector.branch-no{margin-left:40px}
+.branch-block{display:flex;flex-direction:column;align-items:flex-start;width:100%}
+.branch-label{font-size:11px;font-weight:700;color:var(--branch-text);margin-left:24px;
+  margin-bottom:2px;text-transform:uppercase;letter-spacing:.5px}
+.branch-paths{display:flex;gap:32px;width:100%;margin-top:4px}
+.branch-path{display:flex;flex-direction:column;align-items:flex-start;gap:0;flex:1;max-width:520px;min-width:180px;
+  border-left:2px solid var(--border);padding-left:12px;padding-bottom:8px;margin-top:4px}
+.branch-path-label{font-size:11px;font-weight:700;padding:3px 10px;border-radius:4px;
+  margin-bottom:4px;user-select:none}
+.branch-path-label.yes{color:#34d399;background:rgba(52,211,153,.15)}
+.branch-path-label.no{color:#f87171;background:rgba(248,113,113,.15)}
+.highlight-filter .step-card:not(.filter),
+.highlight-check .step-card:not(.check),
+.highlight-service .step-card:not(.service),
+.highlight-db .step-card:not(.db),
+.highlight-slack .step-card:not(.slack),
+.highlight-queue .step-card:not(.queue),
+.highlight-branch .step-card:not(.branch),
+.highlight-early-exit .step-card:not(.early-exit){opacity:.2}
+.empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  height:100%;color:var(--text-dim);gap:8px}
+.empty-state-icon{font-size:48px;opacity:.3}
+
+/* BOTTOM BAR */
+.bottom-bar{border-top:1px solid var(--border);padding:10px 20px;display:flex;
+  align-items:center;gap:12px;background:var(--sidebar);min-height:50px}
+.prompt-text{flex:1;font-size:12px;color:var(--text-muted);line-height:1.4;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.copy-btn{padding:6px 14px;border-radius:6px;background:var(--accent);color:#fff;
+  font-size:12px;font-weight:600;border:none;cursor:pointer;white-space:nowrap;transition:all .15s}
+.copy-btn:hover{background:var(--accent-hover)}
+.copy-btn.copied{background:#059669}
+
+/* RESPONSIVE */
+@media(max-width:700px){
+  .sidebar{position:fixed;left:-260px;top:0;bottom:0;transition:left .25s;z-index:100}
+  .sidebar.open{left:0}
+  .menu-toggle{display:block !important}
+  .flow-area{padding:48px 16px 16px}
+  .branch-paths{flex-direction:column;gap:16px}
+  .branch-path{min-width:unset;max-width:100%}
+}
+.menu-toggle{display:none;position:fixed;top:10px;left:10px;z-index:101;
+  width:36px;height:36px;border-radius:8px;background:var(--card);border:1px solid var(--border);
+  color:var(--text);font-size:18px;cursor:pointer;line-height:36px;text-align:center}
+</style>
+</head>
+<body>
+<button class="menu-toggle" id="menuToggle" aria-label="Toggle sidebar">&#9776;</button>
+<aside class="sidebar" id="sidebar" role="navigation">
+  <div class="sidebar-header">
+    <h1>Event Flow Explorer</h1>
+    <input type="text" class="search-input" id="searchInput" placeholder="Search events..." aria-label="Search events">
+  </div>
+  <div class="event-list" id="eventList" role="listbox" tabindex="0" aria-label="Event list"></div>
+  <div class="mode-toggle">
+    <label>
+      <input type="checkbox" id="modeToggle" disabled>
+      <span class="toggle-track"></span>
+      <span class="mode-label">Gatekeeper mode</span>
+    </label>
+  </div>
+</aside>
+<main class="main">
+  <div class="legend" id="legend" role="toolbar" aria-label="Step type legend"></div>
+  <div class="flow-area" id="flowArea">
+    <div class="empty-state" id="emptyState">
+      <div class="empty-state-icon">&#8644;</div>
+      <div>Select an event to explore its flow</div>
+      <div style="font-size:11px">Use arrow keys to navigate, Enter to select</div>
+    </div>
+  </div>
+  <div class="bottom-bar">
+    <div class="prompt-text" id="promptText">Select an event to see its flow description</div>
+    <button class="copy-btn" id="copyBtn">Copy</button>
+  </div>
+</main>
+<script>
+(function(){
+"use strict";
+
+/* ========== STEP TYPE DEFINITIONS ========== */
+const STEP_TYPES = [
+  {key:'filter',label:'Filter',bg:'var(--filter)',color:'var(--filter-text)'},
+  {key:'check',label:'Check',bg:'var(--check)',color:'var(--check-text)'},
+  {key:'service',label:'Service',bg:'var(--service)',color:'var(--service-text)'},
+  {key:'db',label:'Database',bg:'var(--db)',color:'var(--db-text)'},
+  {key:'slack',label:'Slack API',bg:'var(--slack)',color:'var(--slack-text)'},
+  {key:'queue',label:'BullMQ',bg:'#422006',color:'var(--queue-text)',border:'1px solid #a16207'},
+  {key:'branch',label:'Branch',bg:'transparent',color:'var(--branch-text)',border:'2px solid var(--branch)'},
+  {key:'early-exit',label:'Early Exit',bg:'var(--early-exit)',color:'var(--early-exit-text)',border:'1px dashed #ef4444'},
+];
+
+/* ========== EVENT FLOW DATA ========== */
+function S(type,text){return{type:type,text:text}}
+function B(text,yes,no){return{type:'branch',text:text,yes:yes,no:no}}
+
+const EVENTS = [
+  /* ===== MESSAGES ===== */
+  {
+    id:'new-message',category:'Messages',name:'New Message',
+    source:'src/slack/handlers/event.handlers.ts:handleMessage',
+    hasModeVariant:true,
+    prompt:'When a user posts a message in a configured channel, the bot checks if it matches the review regex pattern. If it does, it creates a review task and assigns reviewers from wave 1 (or the gatekeeper in gatekeeper mode), then posts a thread reply tagging them and updates the emoji counter.',
+    steps:[
+      S('filter','Filter out bot messages and message subtypes (edits, deletes)'),
+      S('filter','Require user and text properties present'),
+      S('check','Look up channel configuration'),
+      S('early-exit','Channel not found or inactive \u2192 stop'),
+      S('check','Validate regex pattern for ReDoS safety'),
+      S('early-exit','Regex unsafe \u2192 stop'),
+      S('check','Test message text against channel regex'),
+      S('early-exit','No regex match \u2192 stop'),
+      S('service','Get wave 1 members with max_reviewers limit'),
+      S('service','Filter out author, shuffle, apply max_reviewers cap'),
+      S('early-exit','0 eligible reviewers \u2192 stop'),
+      S('db','createTaskWithReviewers \u2014 INSERT task + reviewers in single transaction'),
+      S('slack','Post thread reply tagging assigned reviewers'),
+      S('slack','Calculate remaining count and update reviewer emoji on original message'),
+    ],
+    gatekeeperSteps:[
+      S('filter','Filter out bot messages and message subtypes (edits, deletes)'),
+      S('filter','Require user and text properties present'),
+      S('check','Look up channel configuration'),
+      S('early-exit','Channel not found or inactive \u2192 stop'),
+      S('check','Validate regex pattern for ReDoS safety'),
+      S('early-exit','Regex unsafe \u2192 stop'),
+      S('check','Test message text against channel regex'),
+      S('early-exit','No regex match \u2192 stop'),
+      S('service','Gatekeeper mode: assign only gatekeeper_slack_id (skip wave lookup)'),
+      S('db','createTaskWithReviewers \u2014 INSERT task + gatekeeper reviewer in transaction'),
+      S('slack','Post thread reply tagging gatekeeper'),
+      S('slack','Update reviewer count emoji'),
+    ],
+  },
+  {
+    id:'approve',category:'Messages',name:'++ (approve)',
+    source:'src/slack/handlers/event.handlers.ts:handleThreadCommand(approve)',
+    hasModeVariant:true,
+    prompt:'When a reviewer posts ++ in a review thread, their approval is recorded. If all current wave reviewers are resolved, the bot tries to advance to the next wave or completes the task. In gatekeeper mode, gatekeeper approval completes the task immediately.',
+    steps:[
+      S('check','Get active task in thread'),
+      S('early-exit','No active task \u2192 silent return'),
+      S('check','Task status must be "in_review"'),
+      S('early-exit','Wrong status \u2192 silent return'),
+      S('check','Verify user is a reviewer in the current wave'),
+      S('early-exit','Not a reviewer \u2192 silent return'),
+      S('db','approveReview \u2014 SELECT FOR UPDATE, set reviewer to "approved"'),
+      S('check','Check if all wave reviewers resolved (approved/skipped)'),
+      B('All resolved?',
+        [
+          S('service','Find next eligible wave (standard flow)'),
+          B('Next wave exists?',
+            [
+              S('db','INSERT next wave reviewers, UPDATE tasks.current_wave'),
+              S('slack','Notify new wave reviewers in thread'),
+              S('slack','Update reviewer count emoji'),
+            ],
+            [
+              S('db','UPDATE task status to "completed"'),
+              S('slack','Post completion message in thread'),
+              S('slack','Add checkmark reaction'),
+              S('slack','Remove reviewer count emoji'),
+            ]
+          ),
+        ],
+        [
+          S('slack','Update reviewer count emoji'),
+        ]
+      ),
+    ],
+    gatekeeperSteps:[
+      S('check','Get active task in thread'),
+      S('early-exit','No active task \u2192 silent return'),
+      S('check','Task status must be "in_review"'),
+      S('early-exit','Wrong status \u2192 silent return'),
+      S('check','Verify user is a reviewer in the current wave'),
+      S('early-exit','Not a reviewer \u2192 silent return'),
+      S('db','approveReview \u2014 SELECT FOR UPDATE, set reviewer to "approved"'),
+      S('check','Check if all wave reviewers resolved'),
+      B('All resolved? (gatekeeper path)',
+        [
+          S('check','Check if gatekeeper approved'),
+          B('Gatekeeper approved?',
+            [
+              S('db','UPDATE task to "completed" \u2014 gatekeeper approval completes task'),
+              S('slack','Post completion message'),
+              S('slack','Add checkmark reaction'),
+            ],
+            [
+              S('db','INSERT gatekeeper at wave N+1, UPDATE tasks.current_wave'),
+              S('slack','Notify gatekeeper in thread'),
+              S('slack','Update reviewer count emoji'),
+            ]
+          ),
+        ],
+        [
+          S('slack','Update reviewer count emoji'),
+        ]
+      ),
+    ],
+  },
+  {
+    id:'rework',category:'Messages',name:'-- (rework)',
+    source:'src/slack/handlers/event.handlers.ts:handleThreadCommand(rework)',
+    hasModeVariant:false,
+    prompt:'When a reviewer posts -- in a review thread, the task is sent for rework. The author needs to fix the issues and post "fixed" to resume the review.',
+    steps:[
+      S('check','Get active task in thread'),
+      S('early-exit','No active task \u2192 silent return'),
+      S('check','Task status must be "in_review"'),
+      S('early-exit','Wrong status \u2192 silent return'),
+      S('check','Verify user is a reviewer in the current wave'),
+      S('early-exit','Not a reviewer \u2192 silent return'),
+      S('db','sendToRework \u2014 UPDATE task status to "rework"'),
+      S('slack','Post "sent for rework by @user" in thread'),
+    ],
+  },
+  {
+    id:'fixed',category:'Messages',name:'fixed',
+    source:'src/slack/handlers/event.handlers.ts:handleThreadCommand(fixed)',
+    hasModeVariant:false,
+    prompt:'When the task author posts "fixed" in a rework thread, the task returns to in_review status. Expired postponed reviewers are reset to pending, and all pending reviewers are re-notified.',
+    steps:[
+      S('check','Get active task in thread'),
+      S('early-exit','No active task \u2192 silent return'),
+      S('check','Task status must be "rework"'),
+      S('early-exit','Not in rework \u2192 silent return'),
+      S('check','Verify sender is the task author'),
+      S('early-exit','Not the author \u2192 silent return'),
+      S('db','markFixed \u2014 UPDATE task status to "in_review"'),
+      S('service','Get pending reviewers (resets expired postponed back to pending)'),
+      S('slack','Notify pending reviewers: "please re-review"'),
+    ],
+  },
+  {
+    id:'skip',category:'Messages',name:'!skip @user',
+    source:'src/slack/handlers/event.handlers.ts:handleSkipMessage',
+    hasModeVariant:true,
+    prompt:'When someone posts !skip @user in a review thread, the targeted reviewer is marked as skipped. If all wave reviewers are resolved, the bot advances to the next wave or completes the task. In gatekeeper mode, wave transitions use virtual gatekeeper waves.',
+    steps:[
+      S('check','Get active task in thread'),
+      S('early-exit','No active task \u2192 error message'),
+      S('db','skipReviewer \u2014 SELECT FOR UPDATE, set reviewer to "skipped"'),
+      S('slack','Post "reviewer skipped by @sender" in thread'),
+      S('check','Check if all wave reviewers resolved'),
+      B('Task completed?',
+        [
+          S('slack','Post completion message'),
+          S('slack','Add checkmark reaction'),
+          S('slack','Remove reviewer count emoji'),
+        ],
+        [
+          S('slack','Update reviewer count emoji'),
+          S('check','Check if wave transitioned'),
+          B('Wave transitioned?',
+            [
+              S('service','Get new wave pending reviewers'),
+              S('slack','Notify new wave reviewers in thread'),
+            ],
+            []
+          ),
+        ]
+      ),
+    ],
+    gatekeeperSteps:[
+      S('check','Get active task in thread'),
+      S('early-exit','No active task \u2192 error message'),
+      S('db','skipReviewer \u2014 SELECT FOR UPDATE (gatekeeper wave transition inside)'),
+      S('slack','Post "reviewer skipped by @sender" in thread'),
+      S('check','Check if all wave reviewers resolved'),
+      B('Task completed? (gatekeeper checks if gatekeeper approved)',
+        [
+          S('slack','Post completion message'),
+          S('slack','Add checkmark reaction'),
+          S('slack','Remove reviewer count emoji'),
+        ],
+        [
+          S('slack','Update reviewer count emoji'),
+          S('check','Gatekeeper not approved \u2192 INSERT gatekeeper at wave N+1'),
+          S('slack','Notify gatekeeper in thread'),
+        ]
+      ),
+    ],
+  },
+  {
+    id:'pass',category:'Messages',name:'!pass @user',
+    source:'src/slack/handlers/event.handlers.ts:handlePassMessage',
+    hasModeVariant:false,
+    prompt:'When a reviewer posts !pass @user in a review thread, the sender\u2019s review is transferred to the target user. The sender is marked as skipped and the target is added as a new pending reviewer.',
+    steps:[
+      S('check','Get active task in thread'),
+      S('early-exit','No active task \u2192 error message'),
+      S('db','passReview \u2014 SELECT FOR UPDATE task'),
+      S('check','Validate sender is pending/postponed reviewer'),
+      S('early-exit','Not an active reviewer \u2192 error'),
+      S('check','Validate target not already a pending reviewer'),
+      S('early-exit','Target already pending \u2192 error'),
+      S('db','INSERT new reviewer (target, pending) + UPDATE sender to "skipped"'),
+      S('slack','Post "review passed from @sender to @target" in thread'),
+      S('slack','Update reviewer count emoji'),
+    ],
+  },
+  {
+    id:'stop',category:'Messages',name:'!stop',
+    source:'src/slack/handlers/event.handlers.ts:handleStopMessage',
+    hasModeVariant:true,
+    prompt:'When !stop is posted in a review thread, the task is force-completed. Only the task author can stop a task in standard mode. In gatekeeper mode, the gatekeeper is also authorized.',
+    steps:[
+      S('check','Get active task in thread'),
+      S('early-exit','No active task \u2192 error message'),
+      S('check','Verify sender is the task author'),
+      S('early-exit','Not the author \u2192 error "only author can stop"'),
+      S('db','completeTask \u2014 UPDATE status to "completed"'),
+      S('slack','Post "task stopped and completed" in thread'),
+      S('slack','Add checkmark reaction'),
+      S('slack','Remove reviewer count emoji'),
+    ],
+    gatekeeperSteps:[
+      S('check','Get active task in thread'),
+      S('early-exit','No active task \u2192 error message'),
+      S('check','Verify sender is author OR gatekeeper'),
+      S('early-exit','Neither author nor gatekeeper \u2192 error'),
+      S('db','completeTask \u2014 UPDATE status to "completed"'),
+      S('slack','Post "task stopped and completed" in thread'),
+      S('slack','Add checkmark reaction'),
+      S('slack','Remove reviewer count emoji'),
+    ],
+  },
+  {
+    id:'review-cmd',category:'Messages',name:'!review',
+    source:'src/slack/handlers/event.handlers.ts:handleReviewCommand',
+    hasModeVariant:true,
+    prompt:'The !review command manually creates a review task for an existing thread message. Useful when the bot was paused or wasn\u2019t configured when the original message arrived. It fetches the root message, matches the regex, and assigns reviewers.',
+    steps:[
+      S('check','Check for existing active task in thread'),
+      S('early-exit','Task already exists \u2192 error'),
+      S('check','Look up channel configuration'),
+      S('early-exit','Channel not found \u2192 error "run /init first"'),
+      S('check','Validate regex for ReDoS safety'),
+      S('early-exit','Regex unsafe \u2192 error'),
+      S('slack','Fetch root message via Slack API (conversations.history)'),
+      S('early-exit','Could not retrieve message \u2192 error'),
+      S('check','Test root message against channel regex'),
+      S('early-exit','No match \u2192 error'),
+      S('service','Get wave 1 members, filter out root author, shuffle, apply limit'),
+      S('early-exit','0 eligible reviewers \u2192 error'),
+      S('db','createTaskWithReviewers \u2014 INSERT task + reviewers in transaction'),
+      S('slack','Post thread reply tagging reviewers'),
+      S('slack','Update reviewer count emoji'),
+    ],
+    gatekeeperSteps:[
+      S('check','Check for existing active task in thread'),
+      S('early-exit','Task already exists \u2192 error'),
+      S('check','Look up channel configuration'),
+      S('early-exit','Channel not found \u2192 error'),
+      S('check','Validate regex for ReDoS safety'),
+      S('early-exit','Regex unsafe \u2192 error'),
+      S('slack','Fetch root message via Slack API'),
+      S('early-exit','Could not retrieve message \u2192 error'),
+      S('check','Test root message against channel regex'),
+      S('early-exit','No match \u2192 error'),
+      S('service','Gatekeeper mode: assign only gatekeeper_slack_id'),
+      S('db','createTaskWithReviewers in transaction'),
+      S('slack','Post thread reply tagging gatekeeper'),
+      S('slack','Update reviewer count emoji'),
+    ],
+  },
+
+  /* ===== REACTIONS ===== */
+  {
+    id:'eyes-emoji',category:'Reactions',name:'\ud83d\udc40 Eyes emoji',
+    source:'src/slack/handlers/event.handlers.ts:handleReactionAdded',
+    hasModeVariant:false,
+    prompt:'When a reviewer reacts with the eyes emoji on a review message, their review is silently postponed for 2 hours. No Slack message is posted. The postponement auto-resets when the cron reminder runs.',
+    steps:[
+      S('filter','Only handle message-type reactions'),
+      S('filter','Strip skin-tone modifier from emoji name'),
+      S('check','Check if emoji is the eyes emoji'),
+      S('early-exit','Not eyes emoji \u2192 stop'),
+      S('check','Get active task for this message'),
+      S('early-exit','No active task \u2192 silent return'),
+      S('check','Find reviewer for user in current wave'),
+      S('early-exit','Not a reviewer \u2192 silent return'),
+      S('db','postponeReviewer \u2014 SELECT FOR UPDATE, set "postponed" until now+2h'),
+    ],
+  },
+
+  /* ===== SLASH COMMANDS ===== */
+  {
+    id:'init',category:'Slash Commands',name:'/init <regex>',
+    source:'src/slack/handlers/command.handlers.ts:handleInitCommand',
+    hasModeVariant:false,
+    prompt:'The /init command initializes the bot in a channel with a regex pattern for matching review messages. It validates the regex for syntax and ReDoS safety, creates the channel config and wave 1, then opens a Slack modal for member configuration.',
+    steps:[
+      S('filter','Acknowledge command (ack)'),
+      S('check','Validate regex pattern provided'),
+      S('early-exit','No pattern \u2192 error "provide a regex"'),
+      S('check','Validate regex syntax and ReDoS safety'),
+      S('early-exit','Invalid or unsafe regex \u2192 error'),
+      S('db','initializeChannel \u2014 INSERT channel with regex pattern'),
+      S('check','Check if channel already initialized'),
+      S('early-exit','Already initialized \u2192 "bot initialized earlier"'),
+      S('slack','Respond: "bot initialized with pattern"'),
+      S('db','createWave \u2014 INSERT wave 1'),
+      S('slack','Open wave 1 configuration modal (views.open)'),
+    ],
+  },
+  {
+    id:'cron',category:'Slash Commands',name:'/cron <expr>',
+    source:'src/slack/handlers/command.handlers.ts:handleCronCommand',
+    hasModeVariant:false,
+    prompt:'The /cron command updates the reminder schedule for a channel. It validates the cron expression, saves it to the database, and updates the BullMQ repeatable job scheduler so reminders fire at the new schedule.',
+    steps:[
+      S('filter','Acknowledge command (ack)'),
+      S('check','Validate cron expression provided'),
+      S('early-exit','No expression \u2192 error with usage example'),
+      S('check','Validate cron syntax with cron-parser'),
+      S('early-exit','Invalid cron \u2192 error with format hint'),
+      S('db','updateCronExpression \u2014 UPDATE channel.cron_expression'),
+      S('queue','Emit CHANNEL_SCHEDULE_UPDATE event \u2192 upsert BullMQ repeatable job'),
+      S('slack','Respond: "schedule updated"'),
+    ],
+  },
+  {
+    id:'pause-resume',category:'Slash Commands',name:'/pause & /resume',
+    source:'src/slack/handlers/command.handlers.ts:handlePauseCommand',
+    hasModeVariant:false,
+    prompt:'The /pause and /resume commands toggle the bot\u2019s active state in a channel. Only workspace admins, owners, and channel creators can use these commands. When paused, new messages are ignored and reminders skip the channel.',
+    steps:[
+      S('filter','Acknowledge command (ack)'),
+      S('check','Verify admin permission (workspace admin/owner/channel creator)'),
+      S('early-exit','Not admin \u2192 permission error'),
+      S('db','pauseChannel / resumeChannel \u2014 UPDATE channel.is_active'),
+      S('slack','Respond: "bot paused/resumed"'),
+    ],
+  },
+  {
+    id:'waves',category:'Slash Commands',name:'/waves [N]',
+    source:'src/slack/handlers/command.handlers.ts:handleWavesCommand',
+    hasModeVariant:false,
+    prompt:'The /waves command either lists all configured waves with their members (no argument) or opens a configuration modal for a specific wave number. Admin permission is required.',
+    steps:[
+      S('filter','Acknowledge command (ack)'),
+      S('check','Verify admin permission'),
+      S('early-exit','Not admin \u2192 permission error'),
+      B('Wave number provided?',
+        [
+          S('check','Validate wave number (positive integer, \u2264 max)'),
+          S('early-exit','Invalid number \u2192 error'),
+          S('db','Get or create wave by channel and number'),
+          S('service','Fetch current wave members'),
+          S('slack','Open wave configuration modal (views.open)'),
+        ],
+        [
+          S('db','getWavesWithMembers for channel'),
+          S('early-exit','No waves configured \u2192 "use /waves N"'),
+          S('service','Format wave list with members and max_reviewers'),
+          S('service','Check for active gatekeeper, append info'),
+          S('slack','Respond ephemeral with formatted wave list'),
+        ]
+      ),
+    ],
+  },
+  {
+    id:'gatekeeper',category:'Slash Commands',name:'/gatekeeper',
+    source:'src/slack/handlers/command.handlers.ts:handleGatekeeperCommand',
+    hasModeVariant:false,
+    prompt:'The /gatekeeper command manages gatekeeper mode for a channel. With no argument it shows the current status. With @user it sets a gatekeeper. With "off" it disables gatekeeper mode. Admin permission is required.',
+    steps:[
+      S('filter','Acknowledge command (ack)'),
+      S('check','Verify admin permission'),
+      S('early-exit','Not admin \u2192 permission error'),
+      B('@user provided?',
+        [
+          S('check','Parse @user mention from argument'),
+          S('early-exit','Invalid mention format \u2192 usage error'),
+          S('db','setGatekeeper \u2014 UPDATE channel.gatekeeper_slack_id'),
+          S('slack','Respond: "gatekeeper mode enabled for @user"'),
+        ],
+        [
+          B('Argument is "off"?',
+            [
+              S('db','setGatekeeper(null) \u2014 disable gatekeeper'),
+              S('slack','Respond: "gatekeeper mode disabled"'),
+            ],
+            [
+              S('db','getGatekeeper \u2014 read current gatekeeper status'),
+              S('slack','Respond ephemeral with gatekeeper status'),
+            ]
+          ),
+        ]
+      ),
+    ],
+  },
+
+  /* ===== MODAL ===== */
+  {
+    id:'wave-config',category:'Modal',name:'Wave Config Submit',
+    source:'src/slack/handlers/view.handlers.ts:handleWaveConfigSubmit',
+    hasModeVariant:false,
+    prompt:'When a wave configuration modal is submitted, the bot validates the input, updates the wave members and max_reviewers in a single transaction, cleans up trailing empty waves if needed, and sends an ephemeral confirmation.',
+    steps:[
+      S('filter','Parse private_metadata (channelId, waveNumber, waveId)'),
+      S('early-exit','Missing metadata \u2192 ack with validation error'),
+      S('check','Verify user is a channel member (security check)'),
+      S('early-exit','Not a member \u2192 ack with access error'),
+      S('filter','Extract selected users and max_reviewers from form values'),
+      S('check','Validate max_reviewers is a positive integer (if provided)'),
+      S('early-exit','Invalid number \u2192 ack with validation error'),
+      S('filter','Acknowledge submission (ack)'),
+      S('db','updateWaveConfiguration \u2014 UPDATE wave + DELETE/INSERT members in transaction'),
+      S('check','Check if members list is empty'),
+      B('Members empty?',
+        [
+          S('db','deleteTrailingEmptyWaves \u2014 clean up waves with no successors'),
+          S('slack','Post ephemeral: "wave(s) deleted"'),
+        ],
+        [
+          S('slack','Post ephemeral: "wave N configuration saved"'),
+        ]
+      ),
+    ],
+  },
+
+  /* ===== SCHEDULED ===== */
+  {
+    id:'cron-reminders',category:'Scheduled',name:'Cron Reminders',
+    source:'src/queue/reminder.processor.ts:process',
+    hasModeVariant:false,
+    prompt:'The cron reminder processor runs on a schedule for each channel. It checks for stale jobs, verifies the channel is active, iterates active tasks, checks each reviewer\u2019s Slack status (huddle, day off, vacation), and sends consolidated reminder messages to available reviewers.',
+    steps:[
+      S('check','Guard: check job age against 30s threshold'),
+      S('early-exit','Stale job (>30s old, e.g. after restart) \u2192 skip'),
+      S('check','Check channel is active'),
+      S('early-exit','Channel inactive \u2192 skip'),
+      S('service','Get all active tasks for channel'),
+      S('filter','For each task: skip if in "rework" status'),
+      S('service','Get pending reviewers for current wave (resets expired postponed)'),
+      B('Pending reviewers found?',
+        [
+          S('service','For each reviewer: check Slack status via getUserInfo'),
+          B('User has status emoji?',
+            [
+              S('filter','Headphones (huddle) \u2192 skip this reminder tick'),
+              S('filter','No-entry (day off) \u2192 skip this reminder tick'),
+              S('service','Palm tree (vacation) \u2192 auto-skip permanently + wave transition'),
+            ],
+            [
+              S('service','User available \u2192 collect for consolidated reminder'),
+            ]
+          ),
+          S('slack','Send single consolidated reminder in thread tagging all available reviewers'),
+          S('db','Update task.last_reminder_at'),
+        ],
+        [
+          S('service','tryAdvanceTask \u2014 stuck task recovery (advance wave or complete)'),
+          S('slack','Update reviewer count emoji'),
+        ]
+      ),
+    ],
+  },
+
+  /* ===== DM ===== */
+  {
+    id:'qa-question',category:'DM',name:'QA Question',
+    source:'src/qa/handlers/dm.handler.ts:DmHandler',
+    hasModeVariant:false,
+    prompt:'When a user sends a direct message to the bot, it\u2019s treated as a QA question. The bot checks rate limits (20 per hour), sends the question to the QA service (OpenAI), and replies with the answer.',
+    steps:[
+      S('filter','Only handle DM messages (channel_type = "im")'),
+      S('filter','Ignore bot messages and subtypes'),
+      S('check','Check rate limit (20 requests/hour per user)'),
+      S('early-exit','Rate limit exceeded \u2192 reply with retry time'),
+      S('service','qaService.answerQuestion \u2014 send to OpenAI'),
+      S('slack','Reply with answer'),
+    ],
+  },
+];
+
+/* ========== STATE ========== */
+let selectedEventId = null;
+let gatekeeperMode = false;
+let highlightType = null;
+let focusedIndex = 0;
+
+/* ========== DOM REFS ========== */
+const eventListEl = document.getElementById('eventList');
+const searchInput = document.getElementById('searchInput');
+const modeToggle = document.getElementById('modeToggle');
+const flowArea = document.getElementById('flowArea');
+const emptyState = document.getElementById('emptyState');
+const legendEl = document.getElementById('legend');
+const promptText = document.getElementById('promptText');
+const copyBtn = document.getElementById('copyBtn');
+const menuToggle = document.getElementById('menuToggle');
+const sidebar = document.getElementById('sidebar');
+
+/* ========== RENDER SIDEBAR ========== */
+function renderEventList(){
+  eventListEl.textContent = '';
+  let currentCat = null;
+  EVENTS.forEach(function(ev,i){
+    if(ev.category !== currentCat){
+      currentCat = ev.category;
+      var cat = document.createElement('div');
+      cat.className = 'category-label';
+      cat.textContent = currentCat;
+      cat.setAttribute('role','presentation');
+      eventListEl.appendChild(cat);
+    }
+    var item = document.createElement('div');
+    item.className = 'event-item';
+    item.setAttribute('role','option');
+    item.setAttribute('data-event-id',ev.id);
+    item.setAttribute('data-index',String(i));
+    item.tabIndex = -1;
+
+    var dot = document.createElement('span');
+    dot.className = 'event-dot';
+    item.appendChild(dot);
+
+    var nameEl = document.createElement('span');
+    nameEl.className = 'event-name';
+    nameEl.textContent = ev.name;
+    item.appendChild(nameEl);
+
+    item.addEventListener('click',function(){selectEvent(ev.id)});
+    eventListEl.appendChild(item);
+  });
+}
+
+function getVisibleItems(){
+  return Array.from(eventListEl.querySelectorAll('.event-item:not(.hidden)'));
+}
+
+function updateActiveItem(){
+  eventListEl.querySelectorAll('.event-item').forEach(function(el){
+    el.classList.toggle('active',el.getAttribute('data-event-id')===selectedEventId);
+  });
+}
+
+/* ========== SEARCH ========== */
+searchInput.addEventListener('input',function(){
+  var q = searchInput.value.toLowerCase().trim();
+  var items = eventListEl.querySelectorAll('.event-item');
+  var cats = eventListEl.querySelectorAll('.category-label');
+  var catVisible = {};
+
+  items.forEach(function(item){
+    var ev = EVENTS[parseInt(item.getAttribute('data-index'))];
+    var match = !q || ev.name.toLowerCase().indexOf(q) !== -1 || ev.category.toLowerCase().indexOf(q) !== -1;
+    item.classList.toggle('hidden',!match);
+    if(match) catVisible[ev.category] = true;
+  });
+
+  cats.forEach(function(cat){
+    cat.style.display = catVisible[cat.textContent] ? '' : 'none';
+  });
+
+  var visible = getVisibleItems();
+  if(visible.length > 0 && selectedEventId){
+    var sel = eventListEl.querySelector('[data-event-id="'+selectedEventId+'"]');
+    if(sel && sel.classList.contains('hidden')){
+      selectEvent(visible[0].getAttribute('data-event-id'));
+    }
+  }
+});
+
+/* ========== KEYBOARD NAV ========== */
+eventListEl.addEventListener('keydown',function(e){
+  var visible = getVisibleItems();
+  if(visible.length === 0) return;
+
+  var current = visible.findIndex(function(el){return el.getAttribute('data-event-id')===selectedEventId});
+  if(current === -1) current = 0;
+
+  if(e.key === 'ArrowDown'){
+    e.preventDefault();
+    current = Math.min(current+1, visible.length-1);
+    selectEvent(visible[current].getAttribute('data-event-id'));
+    visible[current].scrollIntoView({block:'nearest'});
+  } else if(e.key === 'ArrowUp'){
+    e.preventDefault();
+    current = Math.max(current-1, 0);
+    selectEvent(visible[current].getAttribute('data-event-id'));
+    visible[current].scrollIntoView({block:'nearest'});
+  } else if(e.key === 'Enter'){
+    e.preventDefault();
+    selectEvent(visible[current].getAttribute('data-event-id'));
+  }
+});
+
+/* ========== LEGEND ========== */
+function renderLegend(){
+  legendEl.textContent = '';
+  STEP_TYPES.forEach(function(st){
+    var chip = document.createElement('span');
+    chip.className = 'legend-chip '+st.key;
+    chip.textContent = st.label;
+    chip.setAttribute('role','button');
+    chip.setAttribute('tabindex','0');
+    chip.addEventListener('click',function(){toggleHighlight(st.key)});
+    chip.addEventListener('keydown',function(e){if(e.key==='Enter')toggleHighlight(st.key)});
+    legendEl.appendChild(chip);
+  });
+}
+
+function toggleHighlight(type){
+  if(highlightType === type){
+    highlightType = null;
+    flowArea.className = 'flow-area';
+  } else {
+    highlightType = type;
+    flowArea.className = 'flow-area highlight-'+type;
+  }
+  legendEl.querySelectorAll('.legend-chip').forEach(function(chip){
+    var t = null;
+    STEP_TYPES.forEach(function(st){if(chip.classList.contains(st.key))t=st.key});
+    chip.classList.toggle('active',t===highlightType);
+  });
+}
+
+/* ========== SELECT EVENT ========== */
+function selectEvent(id){
+  selectedEventId = id;
+  var ev = EVENTS.find(function(e){return e.id===id});
+  if(!ev) return;
+
+  updateActiveItem();
+
+  modeToggle.disabled = !ev.hasModeVariant;
+  if(!ev.hasModeVariant){
+    modeToggle.checked = false;
+    gatekeeperMode = false;
+  }
+
+  renderFlow();
+  updateHash();
+}
+
+/* ========== MODE TOGGLE ========== */
+modeToggle.addEventListener('change',function(){
+  gatekeeperMode = modeToggle.checked;
+  renderFlow();
+  updateHash();
+});
+
+/* ========== RENDER FLOW ========== */
+function renderFlow(){
+  var ev = EVENTS.find(function(e){return e.id===selectedEventId});
+  if(!ev){
+    emptyState.style.display = 'flex';
+    flowArea.querySelectorAll('.flow-title,.flow-source,.flow-container').forEach(function(el){el.remove()});
+    return;
+  }
+  emptyState.style.display = 'none';
+
+  // Clear previous
+  flowArea.querySelectorAll('.flow-title,.flow-source,.flow-container').forEach(function(el){el.remove()});
+
+  var title = document.createElement('div');
+  title.className = 'flow-title';
+  title.textContent = ev.name;
+  flowArea.insertBefore(title, emptyState);
+
+  var source = document.createElement('div');
+  source.className = 'flow-source';
+  source.textContent = ev.source;
+  flowArea.insertBefore(source, emptyState);
+
+  var steps = gatekeeperMode && ev.gatekeeperSteps ? ev.gatekeeperSteps : ev.steps;
+
+  var container = document.createElement('div');
+  container.className = 'flow-container';
+  flowArea.insertBefore(container, emptyState);
+
+  var delay = 0;
+  renderSteps(steps, container, 24, delay);
+
+  promptText.textContent = ev.prompt;
+
+  // reset highlight
+  highlightType = null;
+  flowArea.className = 'flow-area';
+  legendEl.querySelectorAll('.legend-chip').forEach(function(c){c.classList.remove('active')});
+
+  flowArea.scrollTop = 0;
+}
+
+function renderSteps(steps, parent, marginLeft, baseDelay){
+  var delay = baseDelay;
+  steps.forEach(function(step){
+    if(step.type === 'branch'){
+      delay = renderBranch(step, parent, marginLeft, delay);
+    } else {
+      // Arrow
+      var arrow = document.createElement('div');
+      arrow.className = 'arrow-connector';
+      arrow.style.marginLeft = marginLeft+'px';
+      parent.appendChild(arrow);
+
+      // Step
+      var wrapper = document.createElement('div');
+      wrapper.className = 'step-wrapper';
+      wrapper.style.marginLeft = marginLeft+'px';
+
+      var card = document.createElement('div');
+      card.className = 'step-card '+step.type;
+
+      var label = document.createElement('div');
+      label.className = 'step-label';
+      label.textContent = step.type.replace('-',' ');
+      card.appendChild(label);
+
+      var text = document.createElement('div');
+      text.className = 'step-text';
+      text.textContent = step.text;
+      card.appendChild(text);
+
+      if(step.type === 'early-exit'){
+        var footer = document.createElement('div');
+        footer.className = 'exit-footer';
+        footer.textContent = 'Flow ended';
+        card.appendChild(footer);
+      }
+
+      wrapper.appendChild(card);
+      parent.appendChild(wrapper);
+
+      scheduleReveal(wrapper, delay);
+      delay += 120;
+    }
+  });
+  return delay;
+}
+
+function renderBranch(step, parent, marginLeft, baseDelay){
+  var delay = baseDelay;
+
+  // Arrow into branch
+  var arrow = document.createElement('div');
+  arrow.className = 'arrow-connector';
+  arrow.style.marginLeft = marginLeft+'px';
+  parent.appendChild(arrow);
+
+  // Branch card (diamond-like)
+  var bWrapper = document.createElement('div');
+  bWrapper.className = 'step-wrapper';
+  bWrapper.style.marginLeft = marginLeft+'px';
+
+  var bCard = document.createElement('div');
+  bCard.className = 'step-card branch';
+
+  var bLabel = document.createElement('div');
+  bLabel.className = 'step-label';
+  bLabel.textContent = 'branch';
+  bCard.appendChild(bLabel);
+
+  var bText = document.createElement('div');
+  bText.className = 'step-text';
+  bText.textContent = step.text;
+  bCard.appendChild(bText);
+
+  bWrapper.appendChild(bCard);
+  parent.appendChild(bWrapper);
+  scheduleReveal(bWrapper, delay);
+  delay += 120;
+
+  // Paths container
+  var pathsEl = document.createElement('div');
+  pathsEl.className = 'branch-paths';
+  pathsEl.style.marginLeft = marginLeft+'px';
+  parent.appendChild(pathsEl);
+
+  // Yes path
+  if(step.yes && step.yes.length > 0){
+    var yesPath = document.createElement('div');
+    yesPath.className = 'branch-path';
+    var yesLabel = document.createElement('div');
+    yesLabel.className = 'branch-path-label yes';
+    yesLabel.textContent = '\u2713 Yes';
+    yesPath.appendChild(yesLabel);
+    pathsEl.appendChild(yesPath);
+    delay = renderSteps(step.yes, yesPath, 8, delay);
+  }
+
+  // No path
+  if(step.no && step.no.length > 0){
+    var noPath = document.createElement('div');
+    noPath.className = 'branch-path';
+    var noLabel = document.createElement('div');
+    noLabel.className = 'branch-path-label no';
+    noLabel.textContent = '\u2717 No';
+    noPath.appendChild(noLabel);
+    pathsEl.appendChild(noPath);
+    delay = renderSteps(step.no, noPath, 8, delay);
+  } else {
+    var noPath = document.createElement('div');
+    noPath.className = 'branch-path';
+    var noLabel = document.createElement('div');
+    noLabel.className = 'branch-path-label no';
+    noLabel.style.opacity = '.6';
+    noLabel.textContent = '\u2717 No \u2192 (continues)';
+    noPath.appendChild(noLabel);
+    pathsEl.appendChild(noPath);
+  }
+
+  return delay;
+}
+
+function scheduleReveal(el, delay){
+  setTimeout(function(){el.classList.add('visible')}, delay);
+}
+
+/* ========== URL HASH ========== */
+function updateHash(){
+  var parts = [];
+  if(selectedEventId) parts.push('event='+encodeURIComponent(selectedEventId));
+  if(gatekeeperMode) parts.push('mode=gatekeeper');
+  var hash = parts.length > 0 ? '#'+parts.join('&') : '';
+  history.replaceState(null,'',location.pathname+location.search+hash);
+}
+
+function readHash(){
+  var hash = location.hash.replace(/^#/,'');
+  if(!hash) return;
+  var params = {};
+  hash.split('&').forEach(function(pair){
+    var kv = pair.split('=');
+    if(kv.length===2) params[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1]);
+  });
+  if(params.event){
+    var ev = EVENTS.find(function(e){return e.id===params.event});
+    if(ev){
+      if(params.mode === 'gatekeeper' && ev.hasModeVariant){
+        gatekeeperMode = true;
+        modeToggle.checked = true;
+      }
+      selectEvent(params.event);
+      return;
+    }
+  }
+}
+
+/* ========== COPY ========== */
+copyBtn.addEventListener('click',function(){
+  var ev = EVENTS.find(function(e){return e.id===selectedEventId});
+  if(!ev) return;
+  var text = ev.name + ' \u2014 ' + ev.prompt;
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(showCopied).catch(fallbackCopy.bind(null,text));
+  } else {
+    fallbackCopy(text);
+  }
+});
+
+function fallbackCopy(text){
+  var ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  try{document.execCommand('copy');showCopied()}catch(e){}
+  document.body.removeChild(ta);
+}
+
+function showCopied(){
+  copyBtn.textContent = 'Copied!';
+  copyBtn.classList.add('copied');
+  setTimeout(function(){
+    copyBtn.textContent = 'Copy';
+    copyBtn.classList.remove('copied');
+  },1500);
+}
+
+/* ========== MOBILE MENU ========== */
+menuToggle.addEventListener('click',function(){
+  sidebar.classList.toggle('open');
+});
+
+/* ========== INIT ========== */
+renderEventList();
+renderLegend();
+readHash();
+if(!selectedEventId){
+  // Select first event by default
+  selectEvent(EVENTS[0].id);
+}
+
+})();
+</script>
+</body>
+</html>
